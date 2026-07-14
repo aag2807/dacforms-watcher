@@ -1,0 +1,105 @@
+name: Form Tests (dacgroup.com)
+
+on:
+  # WordPress WP-Cron dispatches this hourly via the GitHub REST API.
+  repository_dispatch:
+    types: [run-form-tests]
+  # Manual runs from the Actions UI — invaluable for testing the whole chain.
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Override BASE_URL (e.g. a staging origin)'
+        required: false
+        default: ''
+      only_locale:
+        description: 'Restrict to one locale tag (e.g. en-GB)'
+        required: false
+        default: ''
+  # Independent reliability net: fires even if the WP site (and thus WP-Cron) is down.
+  # Offset to :35 to avoid GitHub's top-of-hour congestion and to not collide with WP-Cron.
+  schedule:
+    - cron: '35 * * * *'
+
+# Never run two Chromium matrices against production at the same time.
+concurrency:
+  group: form-tests
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run form tests
+        id: tests
+        # Keep going even if tests fail so we always upload + report; a later gate
+        # step restores an honest red/green for the job itself.
+        continue-on-error: true
+        env:
+          CI: '1'
+          # Prefer the dispatch payload's base_url, then the manual input, then the default.
+          BASE_URL: >-
+            ${{ github.event.client_payload.base_url
+                || github.event.inputs.base_url
+                || 'https://www.dacgroup.com' }}
+          ONLY_LOCALE: ${{ github.event.inputs.only_locale || '' }}
+          WORKERS: '3'
+          # SUBMIT_FOR_REAL is intentionally NOT set — scheduled runs stay in dry-run
+          # so no real leads are delivered to DAC's CRM.
+        run: npx playwright test
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            playwright-report/
+            results.json
+            summary.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Report results to WordPress
+        if: always()
+        env:
+          WP_INGEST_URL: ${{ secrets.WP_INGEST_URL }}
+          WP_INGEST_TOKEN: ${{ secrets.WP_INGEST_TOKEN }}
+          WP_INGEST_HMAC_SECRET: ${{ secrets.WP_INGEST_HMAC_SECRET }}
+          # Consumed by report-to-wp.mjs / summary-reporter.ts to build the run URL.
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: node scripts/report-to-wp.mjs
+
+      - name: Gate — fail the job if any test failed
+        if: always()
+        # Restores a truthful job status after continue-on-error above, so GitHub's own
+        # notifications and the run's red/green reflect reality.
+        run: |
+          if [ "${{ steps.tests.outcome }}" != "success" ]; then
+            echo "::error::Form tests failed — see the summary and the uploaded report."
+            exit 1
+          fi
+          echo "All form tests passed."

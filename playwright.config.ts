@@ -5,8 +5,9 @@ const BASE_URL = process.env.BASE_URL || 'https://www.dacgroup.com';
 
 export default defineConfig({
   testDir: './tests',
-  // Live-site latency: give each form flow room, but fail fast on hangs.
-  timeout: 90_000,
+  // Live-site latency: a contact page exercises several forms, each with two
+  // reloads and async HubSpot mounts — give the whole flow room, but still cap it.
+  timeout: 180_000,
   expect: { timeout: 15_000 },
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
@@ -27,9 +28,11 @@ export default defineConfig({
   ],
   use: {
     baseURL: BASE_URL,
-    trace: 'retain-on-failure',
+    // Keep artifacts small: a full-suite failure used to produce a ~1 GB report.
+    // A trace on the first retry is enough to debug; skip videos entirely.
+    trace: 'on-first-retry',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    video: 'off',
     actionTimeout: 15_000,
     navigationTimeout: 45_000,
     // Identify the automation in server logs; keep it honest.

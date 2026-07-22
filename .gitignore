@@ -5,4 +5,5 @@ blob-report/
 .playwright/
 results.json
 summary.json
+insight-urls.json
 *.log

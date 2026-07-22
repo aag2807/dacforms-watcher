@@ -52,7 +52,9 @@ function sampleData(loc: Locale) {
     first: 'QA',
     last: 'Automation',
     fullName: 'QA Automation',
-    email: 'qa.automation.test@example.com',
+    // HubSpot rejects reserved/disposable domains (example.com, mailinator.com), so use
+    // DAC's own domain: still obviously test traffic, self-owned, and never leaks a lead.
+    email: 'qa.automation@dacgroup.com',
     phone: phones[loc.lang] ?? '+1 212 555 0142',
     company: 'DAC QA Automation (test)',
     jobTitle: 'Test Engineer',
@@ -147,9 +149,20 @@ export async function discoverFields(form: Locator): Promise<Field[]> {
   return fields;
 }
 
+/**
+ * Anti-bot honeypot fields (e.g. DAC's `dac_hp`) are hidden off-screen and must stay
+ * empty — filling one flags the whole submission as spam. Off-screen zero-size fields
+ * already fail isVisible(), but match by name too in case a variant is sized.
+ */
+function isHoneypot(f: Field): boolean {
+  const key = `${f.name} ${f.id}`.toLowerCase();
+  return /(^|[\s_-])(hp|honeypot|honey_pot)([\s_-]|$)|dac_hp/.test(key);
+}
+
 /** Only fields a user could actually interact with. */
 async function isFillable(f: Field): Promise<boolean> {
   if (['hidden', 'submit', 'button', 'reset', 'image'].includes(f.type)) return false;
+  if (isHoneypot(f)) return false;
   try {
     return await f.locator.isVisible();
   } catch {
@@ -243,6 +256,22 @@ export function submitButton(form: Locator): Locator {
 }
 
 /**
+ * Click a form's submit control. Some pages stack a sticky bar / decorative container
+ * over a form's button so a normal (actionability-checked) click times out even though
+ * the button is functional — fall back to a forced click that dispatches straight to the
+ * element. Never throws.
+ */
+export async function clickSubmit(form: Locator): Promise<void> {
+  const btn = submitButton(form);
+  await btn.scrollIntoViewIfNeeded().catch(() => {});
+  try {
+    await btn.click({ timeout: 8000 });
+  } catch {
+    await btn.click({ force: true, timeout: 5000 }).catch(() => {});
+  }
+}
+
+/**
  * Click submit and observe what the browser did.
  *
  * In dry-run, any POST/XHR the submit triggers is intercepted and answered with a
@@ -267,9 +296,10 @@ export async function submitAndObserve(
     if (formAction) actionPath = new URL(formAction).pathname;
   } catch { /* relative/empty action */ }
 
-  // Endpoints commonly used by WordPress/CF7/HubSpot/Gravity form submissions.
+  // Endpoints commonly used by WordPress/CF7/HubSpot/Gravity form submissions,
+  // plus DAC's own custom-form REST route (/wp-json/api/v1/forms/submit).
   const FORM_ENDPOINT_RE =
-    /(wp-json.*(contact-form-7|cf7|gravityforms|feedback)|wp-admin\/admin-ajax\.php|wpcf7|hsforms\.com|hubspot|forms\.hubspot|\/gravityforms\/|formstack|marketo)/i;
+    /(wp-json.*(contact-form-7|cf7|gravityforms|feedback)|\/api\/v1\/forms\/submit|wp-admin\/admin-ajax\.php|wpcf7|hsforms\.com|hubspot|forms\.hubspot|\/gravityforms\/|formstack|marketo)/i;
 
   /** Does this request look like the form we're testing submitting itself? */
   const isFormSubmission = (req: import('@playwright/test').Request): boolean => {
@@ -300,17 +330,15 @@ export async function submitAndObserve(
   if (dryRun) await page.route('**/*', routeHandler);
 
   try {
-    const btn = submitButton(form);
-    await btn.scrollIntoViewIfNeeded().catch(() => {});
     // Watch specifically for the form's own submission request (not any POST).
     const reqPromise = page
       .waitForRequest((r) => isFormSubmission(r), { timeout: 8000 })
       .then(() => { requestFired = true; })
       .catch(() => {});
 
-    await btn.click({ timeout: 10000 }).catch(() => {});
+    await clickSubmit(form);
     await reqPromise;
-    await page.waitForTimeout(1500); // let client-side UI settle
+    await page.waitForTimeout(1000); // let client-side UI settle
   } finally {
     if (dryRun) await page.unroute('**/*', routeHandler).catch(() => {});
   }
@@ -372,7 +400,9 @@ export async function looksSuccessful(page: Page, form: Locator): Promise<boolea
     .catch(() => false);
 
   const successClass = await page
-    .locator('.wpcf7-mail-sent-ok, .hs-form-success, .form-success, .success-message')
+    .locator(
+      '.wpcf7-mail-sent-ok, .hs-form-success, .submitted-message, .form-success, .success-message',
+    )
     .first()
     .isVisible()
     .catch(() => false);

@@ -48,6 +48,17 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
+      - name: Build insight manifest
+        # Discover one live URL per language per content section from the sitemaps.
+        # Non-fatal: if it fails, the insight spec skips and static-page coverage runs.
+        continue-on-error: true
+        env:
+          BASE_URL: >-
+            ${{ github.event.client_payload.base_url
+                || github.event.inputs.base_url
+                || 'https://www.dacgroup.com' }}
+        run: node scripts/build-insight-manifest.mjs
+
       - name: Run form tests
         id: tests
         # Keep going even if tests fail so we always upload + report; a later gate
@@ -61,7 +72,9 @@ jobs:
                 || github.event.inputs.base_url
                 || 'https://www.dacgroup.com' }}
           ONLY_LOCALE: ${{ github.event.inputs.only_locale || '' }}
-          WORKERS: '3'
+          # 2 workers keeps these heavy multi-form pages from starving each other into
+          # timeouts (they run ~1 min each); still finishes the suite well under the cap.
+          WORKERS: '2'
           # SUBMIT_FOR_REAL is intentionally NOT set — scheduled runs stay in dry-run
           # so no real leads are delivered to DAC's CRM.
         run: npx playwright test

@@ -74,6 +74,46 @@ async function dismissOverlays(page: Page) {
   await dismissLanguageBanner(page);
 }
 
+/** The Usercentrics/OneTrust "accept all" button. Labels vary by locale AND word order:
+ *  en "Accept All", fr "Accepter tout", de "Alles akzeptieren", es "Aceptar todo". */
+function acceptButton(page: Page): Locator {
+  return page
+    .locator('[data-testid="uc-accept-all-button"], #onetrust-accept-btn-handler')
+    .or(
+      page.getByRole('button', {
+        name: /accept all|accepter tout|tout accepter|alles? akzeptieren|aceptar todo|i agree/i,
+      }),
+    )
+    .first();
+}
+
+/**
+ * Cheap, idempotent safety net: if a consent or geo banner is currently covering the page
+ * — e.g. it mounted late on a slow CI runner and the one-shot dismissal missed it, or it
+ * reappeared — clear it now. Visibility checks only (no long waits), so it's fast when
+ * nothing is there and safe to call before every fill and submit. This is what stops
+ * intermittent "did not fire" false-positives when a banner races the interaction.
+ */
+async function clearBlockingOverlays(page: Page): Promise<void> {
+  const consentHost = page.locator(CONSENT_HOSTS).first();
+  if (await consentHost.isVisible().catch(() => false)) {
+    const accept = acceptButton(page);
+    if (await accept.isVisible().catch(() => false)) {
+      await accept.click().catch(() => {});
+      await consentHost.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {});
+    }
+  }
+
+  const backdrop = page.locator('.dynamic-banner-backdrop').first();
+  if (await backdrop.isVisible().catch(() => false)) {
+    const close = page.locator('.close-language-banner-button').first();
+    if (await close.isVisible().catch(() => false)) {
+      await close.click().catch(() => {});
+      await backdrop.waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+    }
+  }
+}
+
 /**
  * DAC uses Usercentrics (`#usercentrics-cmp-ui`), whose banner mounts *asynchronously* a
  * few seconds after load and then overlays the whole page — a check right after
@@ -82,16 +122,7 @@ async function dismissOverlays(page: Page) {
 async function dismissCookieConsent(page: Page) {
   if (consentHandled.has(page)) return;
 
-  const accept = page
-    .locator('[data-testid="uc-accept-all-button"], #onetrust-accept-btn-handler')
-    .or(
-      // Button labels vary by locale AND word order: en "Accept All", fr "Accepter tout",
-      // de "Alles akzeptieren", es "Aceptar todo". Match the real Usercentrics labels.
-      page.getByRole('button', {
-        name: /accept all|accepter tout|tout accepter|alles? akzeptieren|aceptar todo|i agree/i,
-      }),
-    )
-    .first();
+  const accept = acceptButton(page);
 
   const appeared = await accept
     .waitFor({ state: 'visible', timeout: 8000 })
@@ -201,9 +232,11 @@ async function exerciseForm(
 
     const fields = target.fields;
     const hasRequired = fields.some((f) => f.required);
+    await clearBlockingOverlays(page);
     await fillInvalid(fields);
 
     const before = page.url();
+    await clearBlockingOverlays(page);
     await clickSubmit(freshForm);
     await page.waitForTimeout(1000);
 
@@ -244,6 +277,7 @@ async function exerciseForm(
     const freshForm = target.form;
 
     const fields = target.fields;
+    await clearBlockingOverlays(page);
     const filled = await fillValid(fields, loc);
     expect
       .soft(filled, `[${loc.label} ${url} form#${index + 1}] no fields could be filled`)
@@ -258,6 +292,7 @@ async function exerciseForm(
       )
       .toBeFalsy();
 
+    await clearBlockingOverlays(page);
     const { requestFired, navigated } = await submitAndObserve(page, freshForm, {
       dryRun: DRY_RUN,
     });

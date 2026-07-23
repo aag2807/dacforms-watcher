@@ -1,7 +1,8 @@
 <?php
 /**
- * Email notifications: alert only on state transitions (not every failing run),
+ * Email notifications: alert only when tests are failing (a newly-failing area),
  * plus a dead-man's switch that fires when no run has been ingested recently.
+ * Failures only — no email is sent when forms recover.
  *
  * @package DAC_Form_Monitor
  */
@@ -33,10 +34,9 @@ class DAC_FM_Notify {
 
 	/**
 	 * Decide whether an incoming run warrants an email, by diffing the failing set
-	 * against the last-known failing set. Emails on:
-	 *   - any newly-failing item (pass -> fail)
-	 *   - full recovery (fail -> pass)
-	 * Stays silent on steady-state failures already reported.
+	 * against the last-known failing set. Emails ONLY on a newly-failing item
+	 * (pass -> fail). Stays silent on recovery and on steady-state failures already
+	 * reported.
 	 *
 	 * @param array $summary Decoded summary payload.
 	 * @param int   $post_id Stored run post id.
@@ -63,18 +63,14 @@ class DAC_FM_Notify {
 		}
 
 		$new_failures = array_diff_key( $current, $prev );
-		$recovered    = ( ! empty( $prev ) && empty( $current ) );
 		$run_url      = isset( $summary['run']['runUrl'] ) ? (string) $summary['run']['runUrl'] : '';
 
+		// Failures only — send on newly-failing areas; no recovery/"all passing" email.
 		if ( ! empty( $new_failures ) ) {
 			self::send_failure_email( $new_failures, $current, $run_url, $post_id );
-		} elseif ( $recovered ) {
-			self::admin_alert(
-				'[DAC Form Monitor] ✅ Forms recovered — all tests passing',
-				"All form tests are passing again.\n\nRun: " . ( $run_url ?: 'n/a' )
-			);
 		}
 
+		// Still track the failing set so we email on NEW failures, not every failing run.
 		update_option( 'dac_fm_failing_state', $current, false );
 	}
 

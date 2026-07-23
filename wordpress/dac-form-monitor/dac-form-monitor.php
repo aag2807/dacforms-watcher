@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:       DAC Form Monitor
- * Description:        Schedules hourly Playwright form tests (via GitHub Actions) and ingests
- *                     the results: admin dashboard, failure emails, and a dead-man's switch.
+ * Description:        Ingests twice-daily Playwright form-test results (run via GitHub Actions):
+ *                     admin dashboard, failure emails, dead-man's switch, on-demand "Run now".
  * Version:           1.0.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
@@ -32,7 +32,7 @@ define( 'DAC_FM_HOOK_DEADMAN', 'dac_form_monitor_deadman' );
 define( 'DAC_FM_HOOK_PRUNE', 'dac_form_monitor_prune' );
 define( 'DAC_FM_SCHEDULE_30', 'dac_fm_thirty_minutes' );
 define( 'DAC_FM_RETENTION_DAYS', 30 );
-define( 'DAC_FM_DEADMAN_THRESHOLD', 90 * MINUTE_IN_SECONDS );
+define( 'DAC_FM_DEADMAN_THRESHOLD', 13 * HOUR_IN_SECONDS ); // tests run twice daily (~12h apart) + slack
 define( 'DAC_FM_DIR', plugin_dir_path( __FILE__ ) );
 
 require_once DAC_FM_DIR . 'includes/class-cpt.php';
@@ -70,10 +70,11 @@ register_activation_hook(
 	static function () {
 		DAC_FM_CPT_Registrar::register();
 
-		if ( ! wp_next_scheduled( DAC_FM_HOOK_DISPATCH ) ) {
-			// Start on the next hour boundary-ish; interval schedule, not wall-clock.
-			wp_schedule_event( time() + MINUTE_IN_SECONDS, 'hourly', DAC_FM_HOOK_DISPATCH );
-		}
+		// Scheduling is owned by the GitHub Actions cron (twice daily). WP does NOT
+		// auto-dispatch — clear any dispatch cron left by a previous version so the two
+		// schedulers can't double-trigger. The admin "Run now" button still dispatches
+		// on demand (it calls DAC_FM_Dispatch::run() directly, not via this hook).
+		wp_clear_scheduled_hook( DAC_FM_HOOK_DISPATCH );
 		if ( ! wp_next_scheduled( DAC_FM_HOOK_DEADMAN ) ) {
 			wp_schedule_event( time() + ( 5 * MINUTE_IN_SECONDS ), DAC_FM_SCHEDULE_30, DAC_FM_HOOK_DEADMAN );
 		}

@@ -33,6 +33,7 @@ foreach ( array(
 	'dac_fm_dispatch_error',
 	'dac_fm_failing_state',
 	'dac_fm_deadman_alerted',
+	'dac_fm_version',
 ) as $opt ) {
 	delete_option( $opt );
 }

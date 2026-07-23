@@ -16,9 +16,10 @@ on:
         required: false
         default: ''
   # Independent reliability net: fires even if the WP site (and thus WP-Cron) is down.
-  # Offset to :35 to avoid GitHub's top-of-hour congestion and to not collide with WP-Cron.
+  # Twice daily at 11:35 and 23:35 UTC (≈07:35 and 19:35 AST). Offset to :35 to avoid
+  # GitHub's top-of-hour cron congestion.
   schedule:
-    - cron: '35 * * * *'
+    - cron: '35 11,23 * * *'
 
 # Never run two Chromium matrices against production at the same time.
 concurrency:

@@ -3,7 +3,7 @@
  * Plugin Name:       DAC Form Monitor
  * Description:        Ingests twice-daily Playwright form-test results (run via GitHub Actions):
  *                     admin dashboard, failure emails, dead-man's switch, on-demand "Run now".
- * Version:           1.0.0
+ * Version:           1.1.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            DAC QA
@@ -17,6 +17,7 @@
  *   // Optional:
  *   define('DAC_FORM_BASE_URL', 'https://staging.dacgroup.com'); // override target origin
  *   define('DAC_FORM_ALERT_EMAIL', 'qa@dacgroup.com');           // defaults to admin_email
+ *   define('DAC_FORM_DEADMAN_HOURS', 13);      // "no results" alert window; keep > run cadence
  *
  * @package DAC_Form_Monitor
  */
@@ -25,14 +26,21 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'DAC_FM_VERSION', '1.0.0' );
+define( 'DAC_FM_VERSION', '1.1.0' );
 define( 'DAC_FM_CPT', 'dac_test_run' );
 define( 'DAC_FM_HOOK_DISPATCH', 'dac_dispatch_form_tests' );
 define( 'DAC_FM_HOOK_DEADMAN', 'dac_form_monitor_deadman' );
 define( 'DAC_FM_HOOK_PRUNE', 'dac_form_monitor_prune' );
 define( 'DAC_FM_SCHEDULE_30', 'dac_fm_thirty_minutes' );
 define( 'DAC_FM_RETENTION_DAYS', 30 );
-define( 'DAC_FM_DEADMAN_THRESHOLD', 13 * HOUR_IN_SECONDS ); // tests run twice daily (~12h apart) + slack
+// Alert when no run has ingested within this window. It MUST exceed the GitHub Actions
+// run cadence (.github/workflows/form-tests.yml — currently twice daily, ~12h) plus slack,
+// or it false-alarms between runs. Tune in one place via DAC_FORM_DEADMAN_HOURS (wp-config)
+// if you change the schedule, so the two never silently desync.
+define(
+	'DAC_FM_DEADMAN_THRESHOLD',
+	( defined( 'DAC_FORM_DEADMAN_HOURS' ) ? (int) DAC_FORM_DEADMAN_HOURS : 13 ) * HOUR_IN_SECONDS
+);
 define( 'DAC_FM_DIR', plugin_dir_path( __FILE__ ) );
 
 require_once DAC_FM_DIR . 'includes/class-cpt.php';
@@ -61,6 +69,24 @@ DAC_FM_Dispatch::init();
 DAC_FM_Rest::init();
 DAC_FM_Notify::init();
 DAC_FM_Admin::init();
+
+/**
+ * One-time upgrade routine. Runs on load whenever the stored version differs from the
+ * plugin's, so in-place updates (new code deployed without re-activation) reliably apply
+ * migrations — the activation hook does NOT fire on an already-active site.
+ */
+add_action(
+	'init',
+	static function () {
+		if ( get_option( 'dac_fm_version' ) === DAC_FM_VERSION ) {
+			return;
+		}
+		// GitHub Actions now owns scheduling: ensure no WP dispatch cron lingers from an
+		// older version, which would double-trigger runs alongside the Actions schedule.
+		wp_clear_scheduled_hook( DAC_FM_HOOK_DISPATCH );
+		update_option( 'dac_fm_version', DAC_FM_VERSION, false );
+	}
+);
 
 /**
  * Activation: register the CPT (so rewrite state is correct) and schedule cron events.
